@@ -10,6 +10,8 @@ Outbound: POST /start    → trigger an outbound call
 import base64
 import json
 import os
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 
 import aiohttp
@@ -32,6 +34,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Pipecat India Demo", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+call_logs: deque = deque(maxlen=5)  # store last 5 call log traces
+
+
+@app.get("/last-call")
+async def last_call() -> JSONResponse:
+    return JSONResponse({"calls": list(call_logs)})
 
 
 @app.get("/health")
@@ -156,18 +165,28 @@ async def websocket_endpoint(websocket: WebSocket, body: str = Query(None)):
         except Exception:
             pass
 
-    print(f"[WS] Connection accepted, mode={mode}")
+    log = {"mode": mode, "events": [], "t0": time.time()}
+    call_logs.append(log)
+
+    def ev(msg):
+        log["events"].append({"t": round(time.time() - log["t0"], 3), "msg": msg})
+        print(f"[WS] {msg}")
+
+    ev("connection accepted")
 
     try:
         from bot import bot
         from pipecat.runner.types import WebSocketRunnerArguments
 
+        ev("calling parse_telephony_websocket")
         runner_args = WebSocketRunnerArguments(websocket=websocket)
+        ev("starting bot")
         await bot(runner_args, mode=mode)
+        ev("bot finished")
     except Exception as e:
-        print(f"[WS] Error: {e}")
         import traceback
-        traceback.print_exc()
+        err = traceback.format_exc()
+        ev(f"ERROR: {e} | {err[-300:]}")
         await websocket.close()
 
 
