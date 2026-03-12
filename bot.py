@@ -8,6 +8,7 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     LLMRunFrame,
     TranscriptionFrame,
+    TTSSpeakFrame,
 )
 from pipecat.utils.time import time_now_iso8601
 from pipecat.pipeline.pipeline import Pipeline
@@ -163,18 +164,11 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, mode: str = "in
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info(f"Call connected ({mode})")
-        if mode == "inbound":
-            messages.append({"role": "system", "content": "Please greet the caller in Hindi."})
-            await task.queue_frames([LLMRunFrame()])
-        else:
-            # Outbound: greet immediately
-            messages.append(
-                {
-                    "role": "system",
-                    "content": "Please introduce yourself and ask how you can help.",
-                }
-            )
-            await task.queue_frames([LLMRunFrame()])
+        # TTSSpeakFrame bypasses LLM entirely — audio starts in ~200ms instead of ~2s.
+        # Add the greeting to the LLM context so follow-up turns have conversational history.
+        greeting = "வணக்கம்! நான் உங்கள் சேவை முகவர். நான் எப்படி உதவலாம்?"
+        messages.append({"role": "assistant", "content": greeting})
+        await task.queue_frames([TTSSpeakFrame(text=greeting)])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
