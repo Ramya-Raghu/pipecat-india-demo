@@ -75,12 +75,14 @@ async def health(request: Request) -> JSONResponse:
 
 
 def build_stream_xml(ws_url: str) -> str:
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">
-    {ws_url}
-  </Stream>
-</Response>"""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<Response>"
+        '<Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">'
+        f"{ws_url}"
+        "</Stream>"
+        "</Response>"
+    )
 
 
 # ─── INBOUND ────────────────────────────────────────────────────────────────
@@ -93,8 +95,8 @@ async def inbound_webhook(
     To: str = Query(None),
 ):
     """Plivo calls this when someone dials your number."""
-    print(f"[INBOUND] Call from {From} → {To}, UUID={CallUUID}")
     host = request.headers.get("host")
+    call_logs.append({"mode": "inbound-webhook", "from": From, "to": To, "uuid": CallUUID, "host": host, "t0": time.time(), "events": []})
     body = base64.b64encode(json.dumps({"mode": "inbound", "from": From, "to": To}).encode()).decode()
     ws_url = f"wss://{host}/ws?body={body}"
     return Response(content=build_stream_xml(ws_url), media_type="application/xml")
