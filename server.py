@@ -79,6 +79,7 @@ async def health(request: Request) -> JSONResponse:
         "public_url": os.getenv("PUBLIC_URL", "(not set)"),
         "nvidia_grpc": "ok" if nvidia_ok else f"error: {nvidia_error}",
         "greeting_pcm_bytes": greeting_bytes,
+        "greeting_error": bot_module._greeting_error,
     })
 
 

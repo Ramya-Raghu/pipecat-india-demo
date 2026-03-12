@@ -61,17 +61,19 @@ NVIDIA_MULTILINGUAL_FUNCTION_ID = "71203149-d3b7-4460-8231-1be2543a1fca"
 
 _GREETING = "வணக்கம்! நான் உங்கள் சேவை முகவர். நான் எப்படி உதவலாம்?"
 _greeting_pcm: bytes | None = None
+_greeting_error: str | None = None
 
 
 async def _ensure_greeting_audio() -> None:
     """Pre-generate greeting via ElevenLabs HTTP API (no WebSocket cold-start)."""
-    global _greeting_pcm
+    global _greeting_pcm, _greeting_error
     if _greeting_pcm is not None:
         return
     voice_id = os.getenv("ELEVENLABS_VOICE_ID")
     api_key = os.getenv("ELEVENLABS_API_KEY")
     if not voice_id or not api_key:
-        logger.warning("Cannot pre-generate greeting: missing ELEVENLABS env vars")
+        _greeting_error = "Missing ELEVENLABS_VOICE_ID or ELEVENLABS_API_KEY"
+        logger.warning(f"Cannot pre-generate greeting: {_greeting_error}")
         return
     try:
         async with aiohttp.ClientSession() as session:
@@ -87,11 +89,14 @@ async def _ensure_greeting_audio() -> None:
             ) as resp:
                 if resp.status == 200:
                     _greeting_pcm = await resp.read()
+                    _greeting_error = None
                     logger.info(f"Pre-generated greeting audio: {len(_greeting_pcm)} bytes PCM")
                 else:
                     text = await resp.text()
-                    logger.warning(f"ElevenLabs HTTP {resp.status}: {text[:200]}")
+                    _greeting_error = f"HTTP {resp.status}: {text[:300]}"
+                    logger.warning(f"ElevenLabs pre-gen failed: {_greeting_error}")
     except Exception as e:
+        _greeting_error = str(e)
         logger.warning(f"Failed to pre-generate greeting audio: {e}")
 
 
