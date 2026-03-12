@@ -34,6 +34,20 @@ app = FastAPI(title="Pipecat India Demo", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+@app.get("/health")
+async def health(request: Request) -> JSONResponse:
+    required = [
+        "NVIDIA_API_KEY", "OPENAI_API_KEY", "ELEVENLABS_API_KEY",
+        "ELEVENLABS_VOICE_ID", "PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN", "PLIVO_PHONE_NUMBER",
+    ]
+    missing = [k for k in required if not os.getenv(k)]
+    return JSONResponse({
+        "status": "ok" if not missing else "missing_env_vars",
+        "missing": missing,
+        "public_url": os.getenv("PUBLIC_URL", "(not set)"),
+    })
+
+
 def build_stream_xml(ws_url: str) -> str:
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
