@@ -105,7 +105,9 @@ async def inbound_webhook(
 ):
     """Plivo calls this when someone dials your number."""
     host = request.headers.get("host")
-    call_logs.append({"mode": "inbound-webhook", "from": From, "to": To, "uuid": CallUUID, "host": host, "t0": time.time(), "events": []})
+    log_entry = {"mode": "inbound-webhook", "from": From, "to": To, "uuid": CallUUID, "host": host, "t0": time.time(), "events": []}
+    call_logs.append(log_entry)
+    print(f"[INBOUND] from={From} to={To} uuid={CallUUID} host={host}")
     body = base64.b64encode(json.dumps({"mode": "inbound", "from": From, "to": To}).encode()).decode()
     ws_url = f"wss://{host}/ws?body={body}"
     return Response(content=build_stream_xml(ws_url), media_type="application/xml")
@@ -189,10 +191,9 @@ async def websocket_endpoint(websocket: WebSocket, body: str = Query(None)):
         from bot import bot
         from pipecat.runner.types import WebSocketRunnerArguments
 
-        ev("calling parse_telephony_websocket")
         runner_args = WebSocketRunnerArguments(websocket=websocket)
         ev("starting bot")
-        await bot(runner_args, mode=mode)
+        await bot(runner_args, mode=mode, ev=ev)
         ev("bot finished")
     except Exception as e:
         import traceback
