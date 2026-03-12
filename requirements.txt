@@ -14,4 +14,3 @@ plivo==4.59.6
 # gRPC (NVIDIA NIM)
 grpcio==1.67.1
 grpcio-tools==1.67.1
-nvidia-riva-client==2.25.0
