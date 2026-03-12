@@ -7,6 +7,7 @@ Outbound: POST /start    → trigger an outbound call
           WS   /ws       → shared WebSocket handler for both
 """
 
+import asyncio
 import base64
 import json
 import os
@@ -28,6 +29,9 @@ load_dotenv(override=True)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.session = aiohttp.ClientSession()
+    # Pre-generate greeting audio at startup so the first call has it ready.
+    from bot import _ensure_greeting_audio
+    asyncio.create_task(_ensure_greeting_audio())
     yield
     await app.state.session.close()
 

@@ -1,12 +1,17 @@
+import asyncio
 import os
 
+import aiohttp
 from dotenv import load_dotenv
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
+    Frame,
     InterimTranscriptionFrame,
     LLMRunFrame,
+    OutputAudioRawFrame,
+    StartFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
 )
@@ -19,6 +24,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_turn_strategies import (
     LocalSmartTurnAnalyzerV3,
     TurnAnalyzerUserTurnStopStrategy,
@@ -42,6 +48,87 @@ load_dotenv(override=True)
 
 # NVIDIA NIM function ID for parakeet-rnnt-1.1b-multilingual (supports hi-IN)
 NVIDIA_MULTILINGUAL_FUNCTION_ID = "71203149-d3b7-4460-8231-1be2543a1fca"
+
+# ─── GREETING PRE-GENERATION ─────────────────────────────────────────────────
+# Pre-generate the greeting via ElevenLabs HTTP API at server startup.
+# This avoids the 3-6s ElevenLabs WebSocket cold-start on the first call.
+# on_client_connected fires before tts.start() finishes connecting its WebSocket
+# (pipeline processors start concurrently), so TTSSpeakFrame would block waiting
+# for the WS. Using pre-generated PCM eliminates that blocking entirely.
+
+_GREETING = "வணக்கம்! நான் உங்கள் சேவை முகவர். நான் எப்படி உதவலாம்?"
+_greeting_pcm: bytes | None = None
+
+
+async def _ensure_greeting_audio() -> None:
+    """Pre-generate greeting via ElevenLabs HTTP API (no WebSocket cold-start)."""
+    global _greeting_pcm
+    if _greeting_pcm is not None:
+        return
+    voice_id = os.getenv("ELEVENLABS_VOICE_ID")
+    api_key = os.getenv("ELEVENLABS_API_KEY")
+    if not voice_id or not api_key:
+        logger.warning("Cannot pre-generate greeting: missing ELEVENLABS env vars")
+        return
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=pcm_8000",
+                headers={"xi-api-key": api_key, "Content-Type": "application/json"},
+                json={
+                    "text": _GREETING,
+                    "model_id": "eleven_flash_v2_5",
+                    "language_code": "ta",
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    _greeting_pcm = await resp.read()
+                    logger.info(f"Pre-generated greeting audio: {len(_greeting_pcm)} bytes PCM")
+                else:
+                    text = await resp.text()
+                    logger.warning(f"ElevenLabs HTTP {resp.status}: {text[:200]}")
+    except Exception as e:
+        logger.warning(f"Failed to pre-generate greeting audio: {e}")
+
+
+class GreetingInjector(FrameProcessor):
+    """Injects pre-generated PCM audio directly to transport output.
+
+    Sits between TTS and transport.output(). When inject() is called,
+    it pushes OutputAudioRawFrame chunks downstream — bypassing the
+    ElevenLabs WebSocket entirely for the greeting.
+
+    on_client_connected fires before StartFrame reaches this processor
+    (pipeline processors start concurrently). inject() waits on _ready
+    so frames are only pushed after this processor is fully initialized.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._ready = asyncio.Event()
+
+    async def inject(self, pcm: bytes, sample_rate: int = 8000) -> None:
+        # Wait until StartFrame has been received — push_frame fails before that.
+        await self._ready.wait()
+        chunk_size = 1600  # 100ms at 8kHz 16-bit mono
+        for i in range(0, len(pcm), chunk_size):
+            await self.push_frame(
+                OutputAudioRawFrame(
+                    audio=pcm[i : i + chunk_size],
+                    sample_rate=sample_rate,
+                    num_channels=1,
+                )
+            )
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            self._ready.set()
+        await self.push_frame(frame, direction)
+
+
+# ─── NVIDIA STT PATCH ────────────────────────────────────────────────────────
 
 
 class FinalizingNvidiaSTTService(NvidiaSTTService):
@@ -140,6 +227,9 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, mode: str = "in
         ),
     )
 
+    # Sits between TTS and transport.output() so inject() frames skip STT entirely.
+    greeting_injector = GreetingInjector()
+
     pipeline = Pipeline(
         [
             transport.input(),
@@ -147,6 +237,7 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, mode: str = "in
             user_aggregator,
             llm,
             tts,
+            greeting_injector,
             transport.output(),
             assistant_aggregator,
         ]
@@ -164,11 +255,16 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, mode: str = "in
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info(f"Call connected ({mode})")
-        # TTSSpeakFrame bypasses LLM entirely — audio starts in ~200ms instead of ~2s.
-        # Add the greeting to the LLM context so follow-up turns have conversational history.
-        greeting = "வணக்கம்! நான் உங்கள் சேவை முகவர். நான் எப்படி உதவலாம்?"
-        messages.append({"role": "assistant", "content": greeting})
-        await task.queue_frames([TTSSpeakFrame(text=greeting)])
+        messages.append({"role": "assistant", "content": _GREETING})
+        if _greeting_pcm:
+            # Push pre-generated PCM directly — no ElevenLabs WS needed.
+            # GreetingInjector forwards OutputAudioRawFrame straight to transport.output().
+            logger.info("Playing pre-generated greeting (HTTP PCM)")
+            await greeting_injector.inject(_greeting_pcm)
+        else:
+            # Fallback: let TTS handle it (slower due to WS cold-start)
+            logger.warning("Greeting PCM not ready, falling back to TTSSpeakFrame")
+            await task.queue_frames([TTSSpeakFrame(text=_GREETING)])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
@@ -180,6 +276,12 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, mode: str = "in
 
 
 async def bot(runner_args: RunnerArguments, mode: str = "inbound"):
+    # Kick off greeting pre-generation early (runs concurrently with pipeline setup).
+    # Pipeline startup takes 3+ seconds (SileroVAD load, NVIDIA gRPC, ElevenLabs WS),
+    # so the HTTP call (~300-700ms) will finish well before on_client_connected fires.
+    if _greeting_pcm is None:
+        asyncio.create_task(_ensure_greeting_audio())
+
     transport_type, call_data = await parse_telephony_websocket(runner_args.websocket)
     logger.info(f"Transport detected: {transport_type}, mode: {mode}")
 
