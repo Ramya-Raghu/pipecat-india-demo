@@ -197,6 +197,32 @@ class FinalizingNvidiaSTTService(NvidiaSTTService):
 
     _ev = None  # set externally after construction for call-log diagnostics
 
+    def _response_handler(self):
+        responses = self._asr_service.streaming_response_generator(
+            audio_chunks=self,
+            streaming_config=self._config,
+        )
+        response_count = 0
+        for response in responses:
+            response_count += 1
+            if response_count == 1 and self._ev:
+                has_results = bool(response.results)
+                self._ev(f"NVIDIA STT: first response (has_results={has_results})")
+            if not response.results:
+                continue
+            asyncio.run_coroutine_threadsafe(
+                self._handle_response(response), self.get_event_loop()
+            )
+        if self._ev:
+            asyncio.run_coroutine_threadsafe(
+                self._log(f"NVIDIA STT: stream ended ({response_count} responses total)"),
+                self.get_event_loop(),
+            )
+
+    async def _log(self, msg):
+        if self._ev:
+            self._ev(msg)
+
     async def _thread_task_handler(self):
         try:
             self._thread_running = True
