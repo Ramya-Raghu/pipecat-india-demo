@@ -41,10 +41,27 @@ async def health(request: Request) -> JSONResponse:
         "ELEVENLABS_VOICE_ID", "PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN", "PLIVO_PHONE_NUMBER",
     ]
     missing = [k for k in required if not os.getenv(k)]
+
+    # Test NVIDIA gRPC reachability
+    nvidia_ok = False
+    nvidia_error = None
+    try:
+        import grpc
+        channel = grpc.secure_channel(
+            "grpc.nvcf.nvidia.com:443",
+            grpc.ssl_channel_credentials(),
+        )
+        grpc.channel_ready_future(channel).result(timeout=5)
+        nvidia_ok = True
+        channel.close()
+    except Exception as e:
+        nvidia_error = str(e)
+
     return JSONResponse({
         "status": "ok" if not missing else "missing_env_vars",
         "missing": missing,
         "public_url": os.getenv("PUBLIC_URL", "(not set)"),
+        "nvidia_grpc": "ok" if nvidia_ok else f"error: {nvidia_error}",
     })
 
 
