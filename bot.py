@@ -49,23 +49,31 @@ load_dotenv(override=True)
 NVIDIA_MULTILINGUAL_FUNCTION_ID = "71203149-d3b7-4460-8231-1be2543a1fca"
 
 # ─── GREETING PRE-GENERATION ─────────────────────────────────────────────────
-# Key insight: on Render, NVIDIA STT gRPC connection takes 3-4s. The pipeline's
-# StartFrame propagates serially — each processor's start() must complete before
-# the frame moves to the next. So ANY pipeline-based greeting injection is
-# blocked for 3-4s waiting for NVIDIA gRPC.
+# Key insight: send the greeting DIRECTLY via WebSocket BEFORE the pipeline starts.
+# This avoids waiting for ElevenLabs WebSocket cold-start (0.5-1s on Render).
 #
-# Solution: send greeting DIRECTLY via WebSocket BEFORE the pipeline starts.
-# We use ElevenLabs HTTP API (not WS) to pre-generate the audio at server
-# startup. At call connect, we serialize the PCM to Plivo's playAudio format
-# and write it to the WebSocket immediately — < 200ms from call connect.
+# Primary strategy: load pre-generated PCM from greeting.pcm (committed to repo).
+# This file is generated locally with generate_greeting.py and committed so that
+# Render can load it instantly at startup — no HTTP call needed.
+#
+# Fallback: if greeting.pcm is missing, call ElevenLabs HTTP API at startup.
+# NOTE: ElevenLabs HTTP API is blocked on Render free tier (HTTP 401), so the
+# committed file approach is required for sub-2s greeting on Render.
 
 _GREETING = "வணக்கம்! நான் உங்கள் சேவை முகவர். நான் எப்படி உதவலாம்?"
 _greeting_pcm: bytes | None = None
 _greeting_error: str | None = None
 
+# Load from committed file immediately at import time (synchronous, zero latency).
+_GREETING_PCM_FILE = os.path.join(os.path.dirname(__file__), "greeting.pcm")
+if os.path.exists(_GREETING_PCM_FILE):
+    with open(_GREETING_PCM_FILE, "rb") as _f:
+        _greeting_pcm = _f.read()
+    logger.info(f"Loaded greeting PCM from file: {len(_greeting_pcm)} bytes")
+
 
 async def _ensure_greeting_audio() -> None:
-    """Pre-generate greeting via ElevenLabs HTTP API (no WebSocket cold-start)."""
+    """Fallback: pre-generate greeting via ElevenLabs HTTP API if greeting.pcm is missing."""
     global _greeting_pcm, _greeting_error
     if _greeting_pcm is not None:
         return
