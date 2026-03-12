@@ -152,35 +152,37 @@ async def _send_greeting_via_websocket(websocket, stream_id: str) -> bool:
 class DiagnosticLogger(FrameProcessor):
     """Logs key pipeline events (audio received, VAD, STT, LLM) to the call event log."""
 
-    def __init__(self, ev):
+    def __init__(self, ev, tag=""):
         super().__init__()
         self._ev = ev
+        self._tag = f"[{tag}] " if tag else ""
         self._audio_count = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        t = self._tag
         if isinstance(frame, InputAudioRawFrame):
             self._audio_count += 1
             if self._audio_count == 1:
-                self._ev("audio: first frame received (pipeline getting audio)")
+                self._ev(f"{t}audio: first frame received")
             elif self._audio_count == 50:
-                self._ev("audio: 50 frames received (1s of audio flowing through pipeline)")
+                self._ev(f"{t}audio: 50 frames (1s flowing)")
         elif isinstance(frame, VADUserStartedSpeakingFrame):
-            self._ev("VAD raw: speech detected")
+            self._ev(f"{t}VAD raw: speech detected")
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
-            self._ev("VAD raw: speech ended")
+            self._ev(f"{t}VAD raw: speech ended")
         elif isinstance(frame, UserStartedSpeakingFrame):
-            self._ev("VAD turn: user turn started")
+            self._ev(f"{t}VAD turn: user turn started")
         elif isinstance(frame, UserStoppedSpeakingFrame):
-            self._ev("VAD turn: user turn stopped")
+            self._ev(f"{t}VAD turn: user turn stopped")
         elif isinstance(frame, TranscriptionFrame):
-            self._ev(f"STT: '{frame.text}' finalized={frame.finalized}")
+            self._ev(f"{t}STT: '{frame.text}' finalized={frame.finalized}")
         elif isinstance(frame, InterimTranscriptionFrame):
-            self._ev(f"STT interim: '{frame.text}'")
+            self._ev(f"{t}STT interim: '{frame.text}'")
         elif isinstance(frame, LLMRunFrame):
-            self._ev("LLM: running")
+            self._ev(f"{t}LLM: running")
         elif isinstance(frame, LLMFullResponseEndFrame):
-            self._ev("LLM: response complete")
+            self._ev(f"{t}LLM: response complete")
         await self.push_frame(frame, direction)
 
 
@@ -338,8 +340,9 @@ async def run_bot(
         [p for p in [
             transport.input(),
             stt,
-            DiagnosticLogger(ev) if ev else None,
+            DiagnosticLogger(ev, tag="pre") if ev else None,
             user_aggregator,
+            DiagnosticLogger(ev, tag="post") if ev else None,
             llm,
             tts,
             transport.output(),
