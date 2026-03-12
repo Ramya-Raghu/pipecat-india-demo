@@ -11,6 +11,7 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     Frame,
+    InputAudioRawFrame,
     InterimTranscriptionFrame,
     LLMFullResponseEndFrame,
     LLMRunFrame,
@@ -18,6 +19,8 @@ from pipecat.frames.frames import (
     TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.time import time_now_iso8601
@@ -147,18 +150,29 @@ async def _send_greeting_via_websocket(websocket, stream_id: str) -> bool:
 
 
 class DiagnosticLogger(FrameProcessor):
-    """Logs key pipeline events (VAD, STT, LLM) to the call event log."""
+    """Logs key pipeline events (audio received, VAD, STT, LLM) to the call event log."""
 
     def __init__(self, ev):
         super().__init__()
         self._ev = ev
+        self._audio_count = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if isinstance(frame, UserStartedSpeakingFrame):
-            self._ev("VAD: user started speaking")
+        if isinstance(frame, InputAudioRawFrame):
+            self._audio_count += 1
+            if self._audio_count == 1:
+                self._ev("audio: first frame received (pipeline getting audio)")
+            elif self._audio_count == 50:
+                self._ev("audio: 50 frames received (1s of audio flowing through pipeline)")
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            self._ev("VAD raw: speech detected")
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._ev("VAD raw: speech ended")
+        elif isinstance(frame, UserStartedSpeakingFrame):
+            self._ev("VAD turn: user turn started")
         elif isinstance(frame, UserStoppedSpeakingFrame):
-            self._ev("VAD: user stopped speaking")
+            self._ev("VAD turn: user turn stopped")
         elif isinstance(frame, TranscriptionFrame):
             self._ev(f"STT: '{frame.text}' finalized={frame.finalized}")
         elif isinstance(frame, InterimTranscriptionFrame):
