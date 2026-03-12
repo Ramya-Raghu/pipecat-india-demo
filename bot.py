@@ -168,7 +168,12 @@ class FinalizingNvidiaSTTService(NvidiaSTTService):
                     )
 
 
-async def run_bot(transport: BaseTransport, handle_sigint: bool, mode: str = "inbound"):
+async def run_bot(
+    transport: BaseTransport,
+    handle_sigint: bool,
+    mode: str = "inbound",
+    greeting_already_sent: bool = False,
+):
     stt = FinalizingNvidiaSTTService(
         api_key=os.getenv("NVIDIA_API_KEY"),
         model_function_map={
@@ -247,7 +252,12 @@ async def run_bot(transport: BaseTransport, handle_sigint: bool, mode: str = "in
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        logger.info(f"Call connected ({mode}), pipeline ready")
+        logger.info(f"Call connected ({mode})")
+        if not greeting_already_sent:
+            # PCM wasn't ready pre-pipeline — use TTS WebSocket as fallback.
+            # By now (3-4s into pipeline startup), ElevenLabs WS is established.
+            logger.warning("Pre-pipeline greeting skipped, sending via TTSSpeakFrame fallback")
+            await task.queue_frames([TTSSpeakFrame(text=_GREETING)])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
@@ -274,12 +284,14 @@ async def bot(runner_args: RunnerArguments, mode: str = "inbound"):
     )
 
     # Send greeting BEFORE pipeline starts — avoids 3-4s NVIDIA STT gRPC wait.
-    # Falls back gracefully if PCM not yet available (TTSSpeakFrame no longer used,
-    # user will hear a brief silence on first-ever call before server has pre-gen'd audio).
+    # If PCM isn't ready yet (first call after server start), skip here and fall
+    # back to TTSSpeakFrame in on_client_connected (still works, just ~3-4s slower).
+    greeting_sent = False
     if _greeting_pcm:
         await _send_greeting_via_websocket(runner_args.websocket, call_data["stream_id"])
+        greeting_sent = True
     else:
-        logger.warning("Greeting PCM not ready yet — user will hear silence until first speech turn")
+        logger.warning("Greeting PCM not ready — will use TTSSpeakFrame fallback via pipeline")
 
     transport = FastAPIWebsocketTransport(
         websocket=runner_args.websocket,
@@ -291,4 +303,4 @@ async def bot(runner_args: RunnerArguments, mode: str = "inbound"):
         ),
     )
 
-    await run_bot(transport, runner_args.handle_sigint, mode=mode)
+    await run_bot(transport, runner_args.handle_sigint, mode=mode, greeting_already_sent=greeting_sent)
