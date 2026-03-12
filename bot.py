@@ -195,6 +195,21 @@ class FinalizingNvidiaSTTService(NvidiaSTTService):
     NvidiaSTTService never sets this flag, so we add it here.
     """
 
+    _ev = None  # set externally after construction for call-log diagnostics
+
+    async def _thread_task_handler(self):
+        try:
+            self._thread_running = True
+            await asyncio.to_thread(self._response_handler)
+        except asyncio.CancelledError:
+            self._thread_running = False
+            raise
+        except Exception as e:
+            msg = f"NVIDIA STT gRPC error: {type(e).__name__}: {e}"
+            logger.error(msg)
+            if self._ev:
+                self._ev(msg)
+
     async def _handle_response(self, response):
         for result in response.results:
             if result and not result.alternatives:
@@ -247,6 +262,7 @@ async def run_bot(
     )
     # Select the Indic model type to enable Tamil (ta-IN) support
     stt._custom_configuration = "type:indic"
+    stt._ev = ev  # expose event logger for gRPC error reporting
 
     llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
@@ -296,8 +312,8 @@ async def run_bot(
         [p for p in [
             transport.input(),
             stt,
-            user_aggregator,
             DiagnosticLogger(ev) if ev else None,
+            user_aggregator,
             llm,
             tts,
             transport.output(),
