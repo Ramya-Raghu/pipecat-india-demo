@@ -10,11 +10,16 @@ from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
+    Frame,
     InterimTranscriptionFrame,
+    LLMFullResponseEndFrame,
     LLMRunFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
 )
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.time import time_now_iso8601
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -138,6 +143,33 @@ async def _send_greeting_via_websocket(websocket, stream_id: str) -> bool:
         return False
 
 
+# ─── DIAGNOSTIC LOGGER ───────────────────────────────────────────────────────
+
+
+class DiagnosticLogger(FrameProcessor):
+    """Logs key pipeline events (VAD, STT, LLM) to the call event log."""
+
+    def __init__(self, ev):
+        super().__init__()
+        self._ev = ev
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self._ev("VAD: user started speaking")
+        elif isinstance(frame, UserStoppedSpeakingFrame):
+            self._ev("VAD: user stopped speaking")
+        elif isinstance(frame, TranscriptionFrame):
+            self._ev(f"STT: '{frame.text}' finalized={frame.finalized}")
+        elif isinstance(frame, InterimTranscriptionFrame):
+            self._ev(f"STT interim: '{frame.text}'")
+        elif isinstance(frame, LLMRunFrame):
+            self._ev("LLM: running")
+        elif isinstance(frame, LLMFullResponseEndFrame):
+            self._ev("LLM: response complete")
+        await self.push_frame(frame, direction)
+
+
 # ─── NVIDIA STT PATCH ────────────────────────────────────────────────────────
 
 
@@ -247,15 +279,16 @@ async def run_bot(
     )
 
     pipeline = Pipeline(
-        [
+        [p for p in [
             transport.input(),
             stt,
             user_aggregator,
+            DiagnosticLogger(ev) if ev else None,
             llm,
             tts,
             transport.output(),
             assistant_aggregator,
-        ]
+        ] if p is not None]
     )
 
     task = PipelineTask(
