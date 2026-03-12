@@ -70,11 +70,15 @@ async def health(request: Request) -> JSONResponse:
     except Exception as e:
         nvidia_error = str(e)
 
+    import bot as bot_module
+    greeting_bytes = len(bot_module._greeting_pcm) if bot_module._greeting_pcm else 0
+
     return JSONResponse({
         "status": "ok" if not missing else "missing_env_vars",
         "missing": missing,
         "public_url": os.getenv("PUBLIC_URL", "(not set)"),
         "nvidia_grpc": "ok" if nvidia_ok else f"error: {nvidia_error}",
+        "greeting_pcm_bytes": greeting_bytes,
     })
 
 
